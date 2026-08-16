@@ -5,14 +5,12 @@ import json
 import pandas as pd
 
 import boto3
+from botocore.exceptions import ClientError
 
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 
 import psycopg2
-
-from dotenv import load_dotenv
-load_dotenv()
 
 from airflow import DAG
 from airflow.hooks.base import BaseHook
@@ -59,9 +57,7 @@ def _db():
         autocommit=True
     )
 
-@task
-def to_minio():
-    log.info('Подключение к minio')
+def _minio():
     minio_login = Variable.get('MINIO_ACCESS_KEY')
     minio_pass = Variable.get('MINIO_SECRET_KEY')
     minio_conn = boto3.client(
@@ -71,21 +67,54 @@ def to_minio():
         endpoint_url='http://minio:9000'
     )
 
-    cities = {'Madrid':{'latitude':40.418407, 'longitude':-3.712746},
-               'Valencia':{'latitude':39.464109, 'longitude':-0.375720},
-               'Barcelona':{'latitude':41.388830, 'longitude':2.186581}
-               }
+    return minio_conn
 
-    START_DATE = datetime(2020, 1, 1).date()
-    END_DATE =  datetime.now().date()
+
+def _get_last_loaded(city, minio_conn):
+    try:
+        resp = minio_conn.get_object(
+            Bucket='weather-raw',
+            Key=f'meta-open-meteo/{city}/last_loaded'
+        )
+        body = resp['Body'].read().decode('utf-8')
+        return datetime.strptime(body, '%Y-%m-%d').date()
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'NoSuchKey':
+            return None
+        else:
+            raise
+
+def _put_last_loaded(city, d, minio_conn):
+    minio_conn.put_object(
+        Bucket='weather-raw',
+        Key=f'meta-open-meteo/{city}/last_loaded',
+        Body=d.strftime('%Y-%m-%d').encode('utf-8')
+    )
+
+@task
+def to_minio():
+    minio_conn = _minio()
+
+    cities = {  'Madrid':{'latitude':40.418407, 'longitude':-3.712746},
+                'Valencia':{'latitude':39.464109, 'longitude':-0.375720},
+                'Barcelona':{'latitude':41.388830, 'longitude':2.186581},
+                'Salamanca':{'latitude':40.969370, 'longitude':-5.660824},
+                'Gijon':{'latitude':43.540131, 'longitude':-5.667884}
+               }
 
     log.info('Загрузка данных в minio')
     for city in cities:
         log.info(f'Город: {city}')
-        start = START_DATE
+
+        last_date = _get_last_loaded(city, minio_conn)
+
+        start = last_date + relativedelta(days=1) if last_date else datetime(2020, 1, 1).date()
+        end = datetime.now().date() - relativedelta(days=1)
+
+        max_loaded = last_date
         try:
-            while start < END_DATE:
-                finish = (start + relativedelta(years=1)) - relativedelta(days=1) if start.year != datetime.now().year else datetime.now().date() - relativedelta(days=1)
+            while start <= end:
+                finish = min(start + relativedelta(years=1) - relativedelta(days=1), end)
                 params = {
                     'latitude': cities[city]['latitude'],
                     'longitude': cities[city]['longitude'],
@@ -94,10 +123,13 @@ def to_minio():
                     'daily': 'temperature_2m_max,temperature_2m_min,precipitation_sum'
                 }
 
-                start = start + relativedelta(years=1)
-
-                response = requests.get('https://archive-api.open-meteo.com/v1/archive', params=params)
+                response = requests.get('https://archive-api.open-meteo.com/v1/archive', params=params, timeout=30)
+                response.raise_for_status()
                 data = response.json()
+
+                if 'daily' not in data:
+                    raise ValueError(f'В ответе API нет ключа daily: {data}')
+
                 df = pd.DataFrame(data['daily'])
                 for key in data.keys():
                     if key not in ['daily_units', 'daily']:
@@ -105,8 +137,14 @@ def to_minio():
                 for idx, row in df.iterrows():
                     row_upd = row.drop('time').to_dict()
                     body = json.dumps(row_upd)
-                    key = f'open-meteo/dt={row["time"]}/city={city}/weather.json'
+                    key = f'open-meteo/city={city}/dt={row["time"]}/weather.json'
                     minio_conn.put_object(Bucket='weather-raw', Key=key, Body=body.encode('utf-8'))
+
+                max_loaded = finish
+                start = start + relativedelta(years=1)
+
+            if max_loaded and max_loaded != last_date:
+                _put_last_loaded(city, max_loaded, minio_conn)
         except Exception:
             log.exception(f'Ошибка при загрузке данных в minio: %s', city)
             raise
@@ -149,8 +187,13 @@ def from_minio_to_db():
         ).dropDuplicates(['city'])
 
         # проверка даты последней записи
-        max_date, _ = db.fetch('select max(dt) from ods.weather', how_many_lines='one')
-        df_weather_data_to_db = df_weather_data.filter(F.col('dt') > max_date[0]) if max_date[0] else df_weather_data
+        city_and_max_date, _ = db.fetch('select city, max(dt) from ods.weather group by city')
+        df_city_max_date = spark.createDataFrame(city_and_max_date, ['city', 'max_dt'])
+        df_weather_data_to_db = df_weather_data.join(df_city_max_date, on='city', how='left') \
+            .filter(
+            F.col('max_dt').isNull() | (F.col('dt') > F.col('max_dt'))
+        ) \
+            .drop('max_dt')
 
         # проверка уже записанные города
         all_cities, _ = db.fetch('select distinct city from ods.cities', how_many_lines='all')
