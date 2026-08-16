@@ -1,0 +1,11 @@
+.env
+logs/
+training.py
+notebooks
+weather_dbt/target/
+weather_dbt/dbt_packages/
+weather_dbt/logs/
+weather_dbt/profiles.yml
+.idea/
+dags/__pycache__/weather_hist.cpython-311.pyc
+weather_hist_local.py

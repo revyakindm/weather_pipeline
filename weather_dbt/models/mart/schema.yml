@@ -1,0 +1,11 @@
+version: 2
+models:
+  - name: city_months_stats
+    columns:
+      - name: city
+        tests: [not_null]
+      - name: mnth
+        tests:
+          - not_null
+          - accepted_values: { values: ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+                                        'August', 'September', 'October', 'November', 'December'] }
