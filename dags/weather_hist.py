@@ -104,12 +104,15 @@ def to_minio():
 
     log.info('Загрузка данных в minio')
     for city in cities:
-        log.info(f'Город: {city}')
-
         last_date = _get_last_loaded(city, minio_conn)
 
         start = last_date + relativedelta(days=1) if last_date else datetime(2020, 1, 1).date()
         end = datetime.now().date() - relativedelta(days=1)
+
+        if start > end:
+            log.info(f'Город {city}: данные свежие')
+        else:
+            log.info(f'Город {city}: период {start} - {end}')
 
         max_loaded = last_date
         try:
@@ -170,7 +173,10 @@ def from_minio_to_db():
             .config('spark.driver.bindAddress', '127.0.0.1') \
             .getOrCreate()
 
+
         df = spark.read.json('s3a://weather-raw/open-meteo/')
+
+        log.info(f'Прочитано строк из minio: {df.count()}')
 
         df_weather_data = df.select(
             F.col('dt').cast('date'),
@@ -194,11 +200,13 @@ def from_minio_to_db():
             F.col('max_dt').isNull() | (F.col('dt') > F.col('max_dt'))
         ) \
             .drop('max_dt')
+        log.info(f'Новых строк: {df_weather_data_to_db.count()}')
 
         # проверка уже записанные города
         all_cities, _ = db.fetch('select distinct city from ods.cities', how_many_lines='all')
         all_cities_lst = [c[0] for c in all_cities if c] if all_cities else []
         df_city_data_to_db = df_city_data.filter(~F.col('city').isin(all_cities_lst)) if all_cities_lst else df_city_data
+        log.info(f'Новых городов: {df_city_data_to_db.count()}')
 
         def to_weather_db(df, table):
 
