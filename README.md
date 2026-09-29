@@ -27,11 +27,12 @@ ELT-пайплайн. Собирает исторические данные о 
 - Тесты данных таблицы в mart слое (not null, accepted_values)
 
 ## Запуск
-1. Создать `.env` файл в папке проекта и внести: POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
+1. Создать `.env` файл в папке проекта и внести: POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB,
+MINIO_ROOT_USER, MINIO_ROOT_PASSWORD
 2. `docker compose up -d --build`
 3. В веб-интерфейсе airflow:
    - Connection ID:`weather_db`, Connection Type:`Postgres`, Host:`postgres`, Login:`логин postgres`,
-Password:`пароль postgres`, Port:`5432`, Database:`weather_db`
+Password:`пароль postgres`, Port:`5432`, Database:`значение POSTGRES_DB из .env`
    - Variables: `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` (значения — MINIO_ROOT_USER / MINIO_ROOT_PASSWORD из `.env`)
 4. Запустить DAG `weather_hist`
 5. Выгрузить данные:
@@ -42,6 +43,7 @@ where mnth = 'August'
 order by comf_index desc;
 ```
 Результат:
+
 |mnth|city|avg_precipitation_sum|avg_temperature_2m_max|avg_temperature_2m_min|comf_index|
 |----|----|---------------------|----------------------|----------------------|----------|
 |August|Madrid|0.27|34.33|20.56|32.98|
