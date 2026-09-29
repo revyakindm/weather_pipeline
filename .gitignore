@@ -9,3 +9,4 @@ weather_dbt/profiles.yml
 .idea/
 dags/__pycache__/weather_hist.cpython-311.pyc
 weather_hist_local.py
+training.ipynb
